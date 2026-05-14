@@ -298,3 +298,33 @@ JOIN notifications n ON s.id = n.studentID
 WHERE n.notificationType = 'Placement'
   AND n.createdAt >= NOW() - INTERVAL '7 days';
 ```
+
+---
+
+# Stage 4
+
+## Performance Analysis
+Fetching notifications directly from the PostgreSQL database on every single page load for 50,000 students is an anti-pattern. Even with optimal indexing, the sheer volume of concurrent read connections and queries will exhaust database connection pools, spike CPU/Memory usage, and result in a sluggish user experience.
+
+To solve this, we must decouple the read-heavy traffic from the primary database.
+
+## Proposed Solutions & Tradeoffs
+
+### 1. Implement a Caching Layer (Redis)
+Instead of querying PostgreSQL on page load, we introduce Redis, an in-memory key-value store. When a user requests their notifications, the API checks Redis first. If the data is there (Cache Hit), it returns immediately. If not (Cache Miss), it queries PostgreSQL, stores the result in Redis with a Time-To-Live (TTL), and then returns it.
+*   **Implementation Strategy:** Cache the "Top 50" or "Unread Only" notifications per user.
+*   **Pros:** Sub-millisecond read latency. Massively reduces the load on the primary SQL database.
+*   **Tradeoffs:**
+    *   *Complexity:* Adds another infrastructure component to manage.
+    *   *Cost:* High-memory Redis instances can be expensive.
+
+### 2. Server-Sent Events (SSE) & Local State Management
+We already designed an SSE stream in Stage 1. We can leverage this to fundamentally change how the frontend behaves. Instead of fetching data *every* time a user navigates pages, the React app fetches the initial state once upon login. From then on, it maintains the notification list in local state (e.g., Redux or Context API) and updates it dynamically via the SSE stream.
+*   **Implementation Strategy:** Fetch once -> Listen to SSE -> Update local UI state.
+*   **Pros:** Drops backend API calls for page-loads to nearly zero after the initial session start. Provides the best UX since updates appear instantly.
+*   **Tradeoffs:**
+    *   *Client Memory:* The browser must hold the notification state.
+    *   *Connection Management:* The frontend must robustly handle reconnects and state-resyncing if the SSE connection drops (e.g., user switches internet networks or wakes up a sleeping laptop).
+
+## Final Recommendation
+For a production environment of this scale, a hybrid approach is best: Use **Redis** to cache the initial payload to ensure the first page load is blazing fast, and rely on **SSE + Local State** to handle subsequent updates so the user doesn't need to refresh the page to see new data.
