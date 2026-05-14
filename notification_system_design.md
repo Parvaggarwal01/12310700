@@ -437,3 +437,9 @@ To maintain the top 10 efficiently, we use a **Min-Heap (Priority Queue) of fixe
 2. As new notifications stream in, we compare them to the root of the Min-Heap (the lowest priority item currently in the top 10).
 3. If the new notification has a higher priority than the root, we pop the root and push the new notification.
 4. The time complexity to process a new notification drops to $O(\log k)$. Since $k=10$ is a constant, insertion is effectively $O(1)$.
+
+# Stage 7
+
+## React Frontend
+
+Created the react frontend the image and video is available in the images folder 
