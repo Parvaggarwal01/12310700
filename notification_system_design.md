@@ -419,3 +419,21 @@ func InAppWorker() {
 }
 
 ```
+
+
+# Stage 6
+
+## Priority Inbox Algorithm
+
+**Priority Rules:**
+1. **Weight:** Placement (High) > Result (Medium) > Event (Low).
+2. **Recency:** If weights are equal, the more recent timestamp wins.
+
+**How to maintain the Top 10 efficiently with a constant stream of new notifications?**
+Sorting the entire array every time a new notification arrives is $O(N \log N)$, which is inefficient for a real-time stream.
+
+To maintain the top 10 efficiently, we use a **Min-Heap (Priority Queue) of fixed size $k$ (where $k=10$)**.
+1. We define a custom comparator for the heap based on Weight and Timestamp.
+2. As new notifications stream in, we compare them to the root of the Min-Heap (the lowest priority item currently in the top 10).
+3. If the new notification has a higher priority than the root, we pop the root and push the new notification.
+4. The time complexity to process a new notification drops to $O(\log k)$. Since $k=10$ is a constant, insertion is effectively $O(1)$.
