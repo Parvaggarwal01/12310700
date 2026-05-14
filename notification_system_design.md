@@ -248,3 +248,53 @@ WHERE id = $1
 AND student_id = $2;
 ```
 
+---
+
+
+# Stage 3: Query Analysis & Performance Optimization
+
+# Original Query
+
+```sql
+SELECT *
+FROM notifications
+WHERE studentID = 1042
+  AND isRead = false
+ORDER BY createdAt ASC;
+```
+
+
+# 1. Is This Query Accurate? Why Is It Slow?
+
+## Accuracy
+
+Yes, the query is functionally accurate and will return the correct unread notifications for that specific student. However, it is extremely slow because, without a proper index, the database engine must perform a Sequential Scan (full table scan). It is forcing the database to read through all 5,000,000 rows to find the handful of rows that match studentID = 1042 and isRead = false.
+
+# 2. What would you change and what would be the likely computation cost?
+
+I would create a Index on the columns used in the WHERE and ORDER BY clauses:
+```sql
+CREATE INDEX idx_student_unread_notifications
+ON notifications (studentID, isRead, createdAt);
+```
+
+## Computation Cost Shift:
+- **Before Index**: $O(N)$ where $N$ is 5,000,000.
+- ***After Index**: $O(\log N)$
+
+# 3. What would you change and what would be the likely computation cost?
+No, this is bad advice for a production system.
+
+**Why**: Every time a new notification is inserted, the database must also update every single index. This will severely degrade write performance.
+
+
+# 4 Recent Placement Notifications Query
+To find all students who received a "Placement" notification in the last 7 days, we need to join the notifications table with the students table and filter by the enum and timestamp.
+
+```sql
+SELECT DISTINCT s.id, s.name, s.email, s.roll_no
+FROM students s
+JOIN notifications n ON s.id = n.studentID
+WHERE n.notificationType = 'Placement'
+  AND n.createdAt >= NOW() - INTERVAL '7 days';
+```
