@@ -328,3 +328,94 @@ We already designed an SSE stream in Stage 1. We can leverage this to fundamenta
 
 ## Final Recommendation
 For a production environment of this scale, a hybrid approach is best: Use **Redis** to cache the initial payload to ensure the first page load is blazing fast, and rely on **SSE + Local State** to handle subsequent updates so the user doesn't need to refresh the page to see new data.
+
+
+---
+
+
+# Stage 5
+
+## Analysis of the Proposed Implementation
+
+**1. What shortcomings do you observe with this implementation?**
+The current `for` loop is synchronous, blocking, and sequential.
+*   **Latency:** If `send_email` takes just 500ms per student, processing 50,000 students will take over 6 hours. The HR user's browser will time out long before this finishes.
+*   **Lack of Fault Tolerance:** There is no retry mechanism. If an external API blips, the notification fails permanently.
+*   **Resource Exhaustion:** Keeping a single thread open and making 50,000 sequential DB/Network calls will likely exhaust memory or connection pools.
+
+**2. Logs indicate that the 'send_email' call failed for 200 students midway. What now?**
+With the current sequential design, an unhandled exception during the `send_email` call will crash the entire loop.
+*   The system is now in an inconsistent state.
+*   We don't know exactly which students received the email and which didn't without manually auditing the logs.
+*   The remaining students in the array will not receive their notifications.
+
+**3. Should the process of saving to DB as well as sending the email happen together? Why or why not?**
+No, they should be decoupled.
+*   **Different Failure Domains:** Saving to our own internal PostgreSQL database is fast and highly reliable. Sending an email relies on an external third-party API (like SendGrid or AWS SES) which is slow and prone to rate-limiting or network timeouts.
+*   **Isolation:** If the email API goes down, it shouldn't prevent the in-app notification (DB save + real-time push) from succeeding. They must scale and fail independently.
+
+## Redesign for Reliability and Speed
+
+To make this fast and reliable, we need an **Event-Driven Architecture** using a Message Broker (like RabbitMQ, Apache Kafka, or Redis Pub/Sub) and Background Workers.
+
+1.  When HR clicks "Notify All", the main API simply drops 50,000 messages into a queue and immediately responds with a "202 Accepted".
+2.  Independent worker services consume these messages asynchronously.
+3.  We split the queues: one for Emails, one for In-App notifications. This decouples the processes.
+4.  Workers have built-in retry logic (exponential backoff) and Dead Letter Queues (DLQ) for permanent failures.
+
+### Revised Pseudocode
+
+```go
+
+type NotificationPayload struct {
+    StudentID string `json:"student_id"`
+    Message   string `json:"message"`
+}
+
+func NotifyAllHandler(studentIDs []string, message string) string {
+    // Quickly publish events to a message broker
+    for _, id := range studentIDs {
+        payload := NotificationPayload{StudentID: id, Message: message}
+
+        PublishToQueue("email_queue", payload)
+        PublishToQueue("in_app_queue", payload)
+    }
+
+    // Return immediately
+    return "Notifications are processing in the background"
+}
+
+// --- 2. Background Worker: Email Service ---
+func EmailWorker() {
+    // Continuously consume messages from the broker
+    for payload := range ConsumeFromQueue("email_queue") {
+        err := SendEmail(payload.StudentID, payload.Message)
+
+        if err != nil {
+            if IsNetworkOrRateLimitError(err) {
+                // Temporary failure: Requeue with exponential backoff
+                RetryWithBackoff("email_queue", payload)
+            } else {
+                // Permanent failure: Send to Dead Letter Queue for manual review
+                SendToDeadLetterQueue("email_dlq", payload)
+            }
+        }
+    }
+}
+
+// --- 3. Background Worker: In-App Service ---
+func InAppWorker() {
+    for payload := range ConsumeFromQueue("in_app_queue") {
+        err := SaveToDB(payload.StudentID, payload.Message)
+
+        if err != nil {
+            RetryWithBackoff("in_app_queue", payload)
+            continue // Skip real-time push if DB save fails
+        }
+
+        // Trigger Server-Sent Event (SSE) to update the user's frontend instantly
+        PushToApp(payload.StudentID, payload.Message)
+    }
+}
+
+```
